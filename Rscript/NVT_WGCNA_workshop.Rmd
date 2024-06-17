@@ -1,0 +1,551 @@
+---
+title: "NVT - WGCNA workshop"
+author: "IBBruns"
+date: "2024-06-13"
+output: html_document
+---
+
+Hello everyone and thank you for joining the WGCNA workshop! In this workshop we will guide through the most important steps of running WGCNA, and hopefully afterwards you will feel able to use it in your own work. 
+
+```{r setup, include=FALSE}
+rm(list = ls()); gc()
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 80), tidy = TRUE)
+
+# set standard plot theme?
+```
+
+
+# Set up analysis {.tabset}
+In this first part of the workshop, we will prepare everything needed to run the pipeline smoothly. We will load the required packages and define our working directories.
+
+## Load packages
+
+### CRAN
+Using pacman (package manager) we can install and load packages using the `p_load` function.
+```{r}
+
+if(!require("pacman", character.only = TRUE)){
+install.packages("pacman")
+}
+
+   
+pacman::p_load(tidyverse, WGCNA, parallel, ggpubr, flashClust, enrichR, data.table)
+
+```
+
+
+
+## Allow multiple core processing
+In this step, we configure our computer to use multiple cores for the analysis. The detectCores() function identifies the total number of cores available. We will use half of these cores to run the WGCNA analysis. You can adjust this if you want to use more/less.
+
+```{r}
+nr_threads = parallel::detectCores()/2
+
+enableWGCNAThreads(nr_threads)
+
+```
+
+ 
+
+## Set directories
+Ensure your working directory is set to the folder where your R project is saved. You can verify this by running getwd(). If the directory is not correct, navigate to Session (upper left corner) > Set Working Directory > To Project Directory.
+
+```{r}
+
+# input directory
+if(!dir.exists(paste0("input/"))){
+  dir.create(path = file.path(getwd(), "input"))
+}
+inputDir <- file.path(getwd(), "input")
+
+# output directory
+if(!dir.exists(paste0("output/"))){
+  dir.create(path = file.path(getwd(), "output"))
+}
+outputDir <- file.path(getwd(), "output")
+
+
+# figure directory
+if(!dir.exists(paste0("figures/"))){
+  dir.create(path = file.path(getwd(), "figures"))
+}
+plotDir = file.path(getwd(), "figures")
+
+
+
+```
+
+
+
+# Import Data
+
+In this section, we will import our data, which is located in the 'input' folder.
+
+To run the WGCNA pipeline, we need log2fc values as input. We have already performed a DESeq2 analysis, so today we can fully focus on the WGCNA tutorial. For this workshop, we selected one compound (Nitrofurantoin), across three timepoints (2hr, 8hr, and 24hr), and three concentrations (5uM, 25uM, and 125uM).
+
+```{r}
+log2fc = read_rds(file.path(inputDir, "log2fc_nitrofurantoin.rds"))
+
+
+
+
+# log2fc = read.delim(file.path(inputDir, "PHHmultiDonors_Tun_s1500_Marije.txt"), sep = " ") %>% dplyr::rename("gene_symbol" = probeID) %>% tibble() %>% select(-"geneID", -"geneSymbol")
+# 
+# 
+# log2fc = log2fc %>%
+#   separate(probeID, into=c("gene_symbol", "probe_nr"), sep = "_") %>%
+#   select(-"probe_nr")
+# 
+# colnames(log2fc) = gsub(".logFC", "", colnames(log2fc)) 
+
+```
+
+
+
+# WGCNA
+
+## Make data usable for WGCNA {.tabset}
+WGCNA requires genes to be in columns, so we need to transpose the data first. Additionally, we will Z-scale the data to ensure that all genes contribute equally to the network construction. 
+
+
+### Transpose log2fc
+```{r}
+# check dimensions log2fc df
+dim(log2fc)
+
+t_log2fc = log2fc %>% 
+  column_to_rownames("gene_symbol") %>%
+  t()
+
+# check dimensions after transposing
+dim(t_log2fc)
+
+```
+
+### Z-scale log2fc
+Z-scaling, or standardizing, the data involves transforming the expression values so that each gene has a mean of zero and a standard deviation of one. This is particularly important because gene expression levels can vary widely. Without scaling, genes with higher expression levels might disproportionately influence the network construction, potentially overshadowing the contribution of genes with lower expression levels. By Z-scaling, we ensure that each gene's expression pattern is considered equally, allowing for a more balanced and accurate network analysis.
+
+```{r}
+t_log2fc_Zscaled <- data.frame(apply(t_log2fc, 2, function(x) (x - mean(x)) / sd(x)))
+
+```
+
+
+
+### Check if data is in right format
+The `goodSamplesGenes()` function, part of the WGCNA package, evaluates whether there are too many missing values in the samples and genes. This function helps identify samples and genes with excessive missing data, ensuring the quality and reliability of the subsequent network analysis.
+```{r}
+goodSamplesGenes(t_log2fc_Zscaled, verbose = TRUE)$allOK
+
+```
+
+
+## Choose softpower {.tabset}
+The first step in running a WGCNA pipeline (and a very important one) is choosing the soft-power.
+
+*Soft-Power Explained:*
+The soft-power, or soft-thresholding power, is a key setting in WGCNA. It helps determine how connections between genes are calculated:
+
+In more detail:
+
+_Network Construction:_ WGCNA constructs a weighted network where connections between genes are determined by their co-expression similarity. The soft-power parameter adjusts these connections, making strong connections stronger and weak connections weaker.
+_Scale-Free Topology:_ The goal is to achieve a scale-free topology, which is a common property of many biological networks. In a scale-free network, a few nodes (genes) are highly connected, while most nodes have fewer connections. The soft-power helps achieve this by emphasizing stronger correlations.
+_Mean connectivity:_ This refers to the average number of connections (edges) each gene has in the network. It's important to balance connectivity because too few connections might miss important biological interactions, while too many could introduce noise.
+_Choosing the Soft-Power:_ The optimal soft-power is chosen by examining the scale-free topology fit index (R^2) and the mean connectivity for various power values. Typically, a power value is selected where the network reaches a high R^2 value (indicating a scale-free topology) while maintaining sufficient mean connectivity.
+By carefully choosing the appropriate soft-power, we ensure that the resulting network accurately represents the underlying biological processes.
+
+
+### Run `pickSoftThreshold` function
+The function evaluates various soft-thresholding powers and provides information on the scale-free topology and mean connectivity of the network. 
+```{r}
+powers_to_test = seq(from = 1, to = 20, by = 1)
+testSoftpowers = pickSoftThreshold(t_log2fc_Zscaled, dataIsExpr = TRUE, powerVector = powers_to_test, networkType = "unsigned")
+
+```
+
+
+### Plot output
+Here we plot the output the `pickSoftThreshold()` function output. We visualize the scale-free topoloty and mean connectivity for each of the tested soft-powers.
+```{r}
+# Create a data frame with variables necessary for plotting
+fitIndices_df <- data.frame(
+  Power = testSoftpowers$fitIndices$Power,
+  SFT_R_sq = -sign(testSoftpowers$fitIndices$slope) * testSoftpowers$fitIndices$SFT.R.sq,
+  Mean_k = testSoftpowers$fitIndices$mean.k
+)
+
+
+# Scale-free topology fit index as a function of the soft-thresholding power
+p1 <- ggplot(fitIndices_df, aes(x = Power, y = SFT_R_sq)) +
+  geom_text(aes(label = powers_to_test), color = "red", size = 4) +
+  geom_hline(yintercept = 0.80, color = "red") +
+  labs(
+    x = "Soft Threshold (power)",
+    y = expression(Scale~Free~Topology~Model~Fit~(signed~R^2)),
+    title = "Scale independence"
+  ) +
+  theme_minimal()
+
+# Mean connectivity as a function of the soft-thresholding power
+p2 <- ggplot(fitIndices_df, aes(x = Power, y = Mean_k)) +
+  geom_text(aes(label = powers_to_test), color = "red", size = 4) +
+  labs(
+    x = "Soft Threshold (power)",
+    y = "Mean Connectivity",
+    title = "Mean connectivity"
+  ) +
+  theme_minimal()
+
+
+ggarrange(p1, p2, ncol = 2)
+
+ggsave(file.path(plotDir, "choose_softpower_plot.pdf"), width = 10, height=5)
+
+```
+
+
+### Pick final soft-power
+Here, we select the soft-power that best suits our dataset. Based on the previous figure, which soft-power do you think would be the most suitable?
+```{r}
+# softPower_final = `add your choice`
+
+```
+
+
+
+## Create adjacency matrix
+
+*Adjacency matrix Explained:*
+In the context of WGCNA, the adjacency matrix represents pairwise connections between genes based on their co-expression similarity. Each element Aij of the matrix indicates the strength of the connection between gene i and gene j. Before construction, the gene expression data is transformed using the soft-thresholding power that you chose in the previous step. Here, we create so called weighted connections, which is unlike a binary network where connections are present or absent. The adjacency matrix in WGCNA contains weighted values that reflect the degree of co-expression similarity. 
+
+```{r}
+# get the adjacency matrix
+adjacency_matrix = adjacency(t_log2fc_Zscaled, type = "unsigned", power = softPower_final)
+```
+
+
+## Turn adjacency matrix into topological overlap matrix (TOM) {.tabset}
+
+### Get TOM similarity matrix
+
+*Topological Overlap Matrix Explained:*
+
+After constructing the adjacency matrix in WGCNA, the next step involves transforming it into a Topological Overlap Matrix (TOM). This conversion enhances the network analysis by emphasizing higher-order network properties and biological relevance. The Topological Overlap Matrix (TOM) measures the similarity in shared neighbors between pairs of genes rather than direct connections. It provides a more nuanced view of network connectivity by considering not only direct connections but also indirect relationships through shared connections with other genes.
+
+Calculating the TOM can be time-consuming (on my computer, it took 24 minutes using 10 cores). Therefore, the results of this step have been precomputed and saved in the output folder. You can load them in the following code chunk. The code to calculate the TOM yourself has been commented out, so you can still run it if you want to.
+
+```{r}
+tom = read_rds(file.path(outputDir, "tom_PHH_nitrofurantoin.rds"))
+
+# tom = TOMsimilarity(adjMat = adjacency_matrix, TOMType = "unsigned", verbose = TRUE)
+
+```
+
+
+### Get TOM dissimilarity matrix
+Instead of measuring similarity, as the TOM does, the TOM Dissimilarity Matrix calculates how different genes are from each other based on their topological overlap profiles. The TOM dissimilarity matrix is an optimized format for clustering and thus module detection. 
+
+```{r}
+diss_tom = 1 - tom
+
+```
+
+
+## Hierarchical clustering
+Now we conduct hierarchical clustering of the genes using the TOM dissimilarity measure. Using the plot function, we can visualize the different branches in the hierarchical tree. 
+
+```{r}
+geneTree = flashClust(as.dist(diss_tom), method = "average")
+
+# plot
+plot(geneTree, xlab = "", sub = "", cex =0.1)
+
+
+```
+
+## Module identification using dynamic tree cut
+
+### Choose settings
+First, we set our desired parameters:
+
+_minModuleSize:_ This parameter sets the minimum number of genes allowed in each module. Modules smaller than this size will not be considered. Choosing an appropriate `minModuleSize` helps in identifying robust and biologically meaningful modules without overly small clusters that may be less statistically reliable or biologically relevant.
+   
+_deepSplit:_ This parameter controls the sensitivity of module detection to smaller substructures within larger modules. Increasing `deepSplit` allows for finer partitioning of large modules, potentially revealing more detailed sub-modules. However, it may also lead to smaller modules that could be less robust.
+   
+_cutHeight_: In hierarchical clustering, this parameter defines the height at which to cut the dendrogram to form distinct modules. It determines the granularity of module detection: lower values result in fewer, larger modules, while higher values yield more, smaller modules. Choosing an optimal `cutHeight` involves balancing between capturing distinct gene groups and avoiding excessive fragmentation of modules.
+
+These settings are crucial for effective module identification in WGCNA, helping to tailor the analysis to specific biological questions and dataset characteristics.
+ 
+```{r}
+minModuleSize = 5
+deepsplit = 4
+cutheight = 0.2
+
+```
+
+
+### Module identification
+Here, we use dynamic tree cut to identify modules. Subsequently, we merge clusters of genes that are very similar using the `mergeCloseModules()` function to obtain our final set of modules as output.
+```{r}
+
+# Module identification
+module_premerge_vector = cutreeDynamic(dendro = geneTree,
+                                distM = diss_tom,
+                                deepSplit = deepsplit,
+                                pamRespectsDendro = FALSE,
+                                minClusterSize = minModuleSize,
+                                verbose = TRUE)
+
+
+module_postmerge = mergeCloseModules(exprData = t_log2fc_Zscaled,
+                                     colors = module_premerge_vector,
+                                     cutHeight = cutheight,
+                                     verbose = TRUE)
+
+```
+
+
+
+## Get module eigengenescore postmerge
+We then create a table containing eigengene scores for each sample/module combination.
+
+*Eigengene score explained:*
+
+An eigengene score represents the first principal component of gene expression profiles within a module. It summarizes the overall expression pattern of genes in that module across samples into a single value. Eigengene scores serve as a representative profile for the module, facilitating comparisons between modules and interpretation of their biological significance. Additionally, the y can be correlated with external traits or conditions to identify modules associated with specific biological processes or phenotypes.
+
+```{r}
+colnames(module_postmerge$newMEs) = gsub("ME", "module_", colnames(module_postmerge$newMEs))
+eg_score_postmerge = module_postmerge$newMEs %>% rownames_to_column(var = "sample_id") %>% tibble()
+eg_score_postmerge_scaled = data.frame(apply(module_postmerge$newMEs, 2, function(x) x/sd(x))) %>%
+  rownames_to_column(var = "sample_id") %>% tibble()
+
+```
+
+
+## Get module definition
+Here, we create a table `module_definition` to display the assignment of each gene to its respective module. The columns softpower, deepsplit, minclustersize, and cutheight provide insights into the parameters chosen for module identification.
+
+```{r}
+module_definition = tibble(module_postmerge = paste0("module_", module_postmerge$colors),
+                           gene_symbol = colnames(t_log2fc_Zscaled),
+                           softpower = softPower_final,
+                           deepsplit = deepsplit,
+                           minclustersize = minModuleSize,
+                           cutheight = cutheight)
+```
+
+
+
+## Determine hub gene
+Within each module identified by WGCNA, hub genes are those that exhibit strong connections with other genes within the same module. One effective method to identify hub genes is by evaluating their intramodular connectivity, often measured using kME (Module Eigengene-based Connectivity). The kME quantifies the correlation between the expression profile of each gene and the module eigengene score of its respective module.
+
+
+### Add correlation eigengene score
+To find the hub genes, we first need to determine the correlation between the eigengene scores and the expression profiles of the genes, which we do in the chunk below.
+
+```{r}
+log2fc_egscore_cor = data.frame(cor(data.frame(t_log2fc_Zscaled, eg_score_postmerge_scaled |> column_to_rownames(var = "sample_id")))) %>%
+  select(unique(module_definition$module_postmerge)) %>%
+  rownames_to_column(var = "gene_symbol") %>%
+      pivot_longer(
+        cols = dplyr::where(is.numeric),
+        names_to = "module_postmerge",
+        values_to = "corr_egs_postmerge"
+      )
+
+
+# add to module_definition table
+module_definition = module_definition %>%
+  left_join(
+    y = log2fc_egscore_cor, by = c("module_postmerge", "gene_symbol"))
+
+
+```
+
+
+
+### Add hub gene
+For each module, we determine the hub gene by identifying the gene with the highest correlation between its log2fc and the module's eigengene score. This gene is marked as TRUE, indicating it is the hub gene for that module. All other genes in the module are assigned NA, ensuring each module is associated with a single hub gene.
+
+```{r}
+module_definition = module_definition %>%
+  left_join(y = module_definition %>%
+              group_by(module_postmerge) %>%
+              slice_max(order_by = abs(corr_egs_postmerge), n = 1) %>%
+              select(module_postmerge, gene_symbol) %>%
+              mutate(hub_postmerge = TRUE) %>%
+              ungroup(),
+            by = c("module_postmerge", "gene_symbol"))
+
+```
+
+
+
+## Rename modules
+In this step, we rename our modules based on their size, ordering them from largest to smallest (e.g., module 3 is larger than module 20). 
+
+### Add module size
+To achieve this, we first determine the size of each module.
+```{r}
+module_definition = module_definition %>%
+  add_count(name = "module_size_postmerge", module_postmerge)
+
+```
+
+
+### Add module number and name
+Here, we name our modules starting with the largest one, labeled as PHHnitro_1, followed by PHHnitro_2, and so forth. The module PHHnitro_0 includes all genes that did not exhibit significant co-expression and therefore were not assigned to any module.
+
+```{r}
+
+module_definition = module_definition %>%
+  left_join(y = module_definition %>%
+              distinct(module_postmerge, module_size_postmerge) %>%
+              arrange(desc(module_size_postmerge)) %>%
+              mutate(module_number = if_else(module_postmerge == "module_0",
+                                             true = 0,
+                                             false = 1:length(module_size_postmerge))) %>%
+              mutate(module = paste0("PHHnitro_", module_number)),
+            by = c("module_postmerge", "module_size_postmerge"))
+       
+
+```
+
+
+### Rename eigengene score matrix
+We now need to update our eigengene score matrix by replacing the old, non-informative module names with the newly generated module names.
+```{r}
+eigengene_scores = eg_score_postmerge_scaled %>% 
+  pivot_longer(cols = -sample_id, names_to = "module_postmerge", values_to = "eg_score_postmerge") %>%
+  left_join(module_definition %>% distinct(module_postmerge, module), by = c("module_postmerge")) %>%
+  pivot_wider(id_cols = -module_postmerge, names_from = module, values_from = eg_score_postmerge)
+
+```
+
+
+
+## Assess enrichment of modules
+Finally, we perform enrichment analyses to investigate the functional enrichment of the identified modules. These analyses provide insights into the biological processes associated with each module. For today's analysis, we focus on overrepresentation analysis, which identifies biological pathways or functions that are overrepresented within a set of genes compared to a background set. This approach helps us understand which specific biological functions or pathways are statistically enriched in our gene modules, highlighting their potential roles in cellular processes.
+
+As this step may be time-consuming (for me it took ~8 min), the results have been precomputed and saved in the output folder. Alternatively, -if you have the time - you have the option to rerun the analysis yourself, the code to run this analysis is now commented.
+
+```{r}
+module_enrichment = read_rds(file.path(outputDir, "module_enrichment_PHH_nitrofurantoin.rds"))
+
+# fun_enrichment <- function(x) {
+#   # enrichr ----
+#   output <- enrichr(
+#     genes = x,
+#     databases = c(
+#       "BioCarta_2016",
+#       "HumanCyc_2016",
+#       "KEGG_2021_Human",
+#       "Reactome_2022",
+#       "WikiPathway_2021_Human",
+#       "InterPro_Domains_2019",
+#       "GO_Molecular_Function_2023",
+#       "GO_Cellular_Component_2023",
+#       "GO_Biological_Process_2023"
+# 
+#     )
+#   )
+#   output = rbindlist(output, idcol = T, fill = T)
+#   output <- output |> filter(Adjusted.P.value < 0.05)
+#   names(output)[1] = c("source")
+#   output <- tibble(output)
+#   cat("\n")
+# 
+#   return(output)
+# 
+# }
+# 
+# 
+# enrichment_results = module_definition %>%
+#   select(module, gene_symbol) %>%
+#   mutate(gene_symbol = str_remove(string = gene_symbol, pattern = "id_")) %>%
+#   nest_by(module) %>%
+#   mutate(result = list(fun_enrichment(x = (
+#     data %>% pull(gene_symbol)
+#   ))))
+# 
+# 
+# module_enrichment = enrichment_results %>% filter(nrow(result) > 0) %>%
+#   select(-data) %>%
+#   unnest(cols = c(result)) %>%
+#   ungroup( )%>%
+#   mutate(Genes = str_replace_all(string = Genes, pattern = ";", replacement = "; "))
+# 
+# write_rds(module_enrichment, file.path(outputDir, "module_enrichment_PHH_nitrofurantoin.rds"))
+
+
+```
+
+
+
+## Investigate modules with highest absolute eigengene score
+Let's examine the latest time point and highest concentration (TG_HPHH_SINGLE_NITROFURANTOIN_T3_C3). Which 5 modules exhibit the highest absolute eigengene scores at this point? What are the biological processes associated with these modules?
+
+```{r}
+eigengene_scores %>%
+  filter(sample_id == "TG_HPHH_SINGLE_NITROFURANTOIN_T3_C3") %>% 
+  pivot_longer(-sample_id, names_to = "module", values_to = "egs") %>%
+  arrange(desc(abs(egs))) %>%
+  slice(1:5) %>%
+  left_join(
+    y = module_enrichment, 
+    by = "module"
+  ) -> top5_egs_enrichment
+
+
+```
+
+
+
+## Oxidative stress module
+Upon comparing our findings with TXG-MAPr, we did not identify a distinct module specifically associated with oxidative stress or the heat shock response. This absence is unexpected given our understanding of nitrofurantoin's effects. Since our dataset includes only one compound, our model lacks the ability to differentiate between various stress responses, aggregating them into a single module. Consequently, all stress responses exhibit synchronized fluctuations across different time points and concentrations.
+
+Upon examining the results, we observed that the oxidative stress module identified in TXG-MAPr (hPHH_144) corresponds to PHHnitro_3 in our analysis. Although PHHnitro_3 did not rank among the top 5 modules, we will investigate if we can still discern a dose response pattern.
+
+### Check enrichment module 3
+Checking the enrichment of module 3, we see that it indeed contains numerous distinct stress responses.
+
+```{r}
+module_enrichment %>% filter(module == "PHHnitro_3")
+
+```
+
+
+### Plot dose response module 3
+```{r}
+
+eigengene_scores %>% pivot_longer(cols = -sample_id, names_to = "module", values_to = "egs") %>% separate(
+  sample_id,
+  into = c(
+    "database",
+    "cell_type",
+    "dosing",
+    "compound",
+    "timepoint",
+    "dose_level"
+  ),
+  sep = "_"
+) %>% 
+  mutate(
+    dose = case_when(dose_level == "C1" ~ 5,
+                     dose_level == "C2" ~ 25,
+                     dose_level == "C3" ~ 125)) %>%
+  group_by(module) %>%
+  filter(any(abs(egs) > 1.5)) %>%
+  ungroup() -> eigengene_scores_long
+
+
+ggplot(eigengene_scores_long %>% filter(module == "PHHnitro_3"), aes(x=dose, y=egs, color = module), group_by = module) + 
+  geom_point() +
+  geom_line() + 
+  theme_bw() +
+  theme(legend.position = "none") +
+  facet_wrap(~timepoint)
+
+
+```
+
