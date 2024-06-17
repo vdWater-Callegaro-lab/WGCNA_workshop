@@ -232,7 +232,11 @@ adjacency_matrix = adjacency(t_log2fc_Zscaled, type = "unsigned", power = softPo
 
 After constructing the adjacency matrix in WGCNA, the next step involves transforming it into a Topological Overlap Matrix (TOM). This conversion enhances the network analysis by emphasizing higher-order network properties and biological relevance. The Topological Overlap Matrix (TOM) measures the similarity in shared neighbors between pairs of genes rather than direct connections. It provides a more nuanced view of network connectivity by considering not only direct connections but also indirect relationships through shared connections with other genes.
 
-Calculating the TOM can be time-consuming (on my computer, it took 24 minutes using 10 cores). Therefore, the results of this step have been precomputed and saved in the output folder. You can load them in the following code chunk. The code to calculate the TOM yourself has been commented out, so you can still run it if you want to.
+Calculating the TOM can be time-consuming (on my computer, it took 24 minutes using 10 cores). Therefore, the results of this step have been precomputed and you can download them from this OneDrive folder:
+
+https://leidenuniv1-my.sharepoint.com/:f:/g/personal/brunsib1_vuw_leidenuniv_nl/EtAi1USK4g5Cpkvm0fCW87wB7xqpoD3oHedUyxAo5yQMcQ?e=dCnjU9
+
+From here, you can put the downloaded file in your output folder and load them in the following code chunk. The code to calculate the TOM yourself has been commented out, so you can still run it if you want to.
 
 ```{r}
 tom = read_rds(file.path(outputDir, "tom_PHH_nitrofurantoin.rds"))
@@ -549,3 +553,25 @@ ggplot(eigengene_scores_long %>% filter(module == "PHHnitro_3"), aes(x=dose, y=e
 
 ```
 
+
+## TXG-MAPr
+From this point, we switch to the TXG-MAPr. The TXG-MAPr was generated using a variety of PHH treatment conditions, not limited to just Nitrofurantoin. Consequently, the model is able to distinguish a greater number of modules, each representing potentially interesting biological processes. Now, let's examine the Nitrofurantoin compound within the TXG-MAPr. What observations can you make?
+
+*Guiding questions:*
+
+**General**
+1) What is Nitrofurantoin being used for? Is it an industrical chemical, pesticide or drug? 
+2) Do you know anything about the mechanism of action/toxicity of the compound? 
+
+**Module activity and enrichment**
+3) What are the top 5 most perturbed modules? 
+4) What are the top 3 most significant module enrichment annotations for each module? 
+5) Are these results in concordance with the expectations from question 2? 
+
+**Module correlation**
+6) Pick a module from your top 5 that you think is relevant and write down the top 5 correlating modules. 
+7) What are the top 3 most significant module enrichment annotations for each of those correlating modules? 
+
+**Experiment correlation**
+8) Can you identify a compound which correlates with Nitrofurantoin? 
+9) Can you explain the experiment correlation results? 
