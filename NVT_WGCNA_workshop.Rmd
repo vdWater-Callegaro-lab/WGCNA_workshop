@@ -81,7 +81,7 @@ plotDir = file.path(getwd(), "figures")
 
 In this section, we will import our data, which is located in the 'input' folder.
 
-To run the WGCNA pipeline, we need log2fc values as input. We have already performed a DESeq2 analysis, so today we can fully focus on the WGCNA tutorial. For this workshop, we selected one compound (Nitrofurantoin), across three timepoints (2hr, 8hr, and 24hr), and three concentrations (5uM, 25uM, and 125uM).
+To run the WGCNA pipeline, we need log2fc values as input. We have already performed a differentially gene expression (DEG) analysis, so today we can fully focus on the WGCNA tutorial. For this workshop, we selected one compound (Nitrofurantoin), across three timepoints (2hr, 8hr, and 24hr), and three concentrations (5uM, 25uM, and 125uM).
 
 ```{r}
 log2fc = read_rds(file.path(inputDir, "log2fc_nitrofurantoin.rds"))
@@ -121,6 +121,7 @@ t_log2fc = log2fc %>%
 dim(t_log2fc)
 
 ```
+
 
 ### Z-scale log2fc
 Z-scaling, or standardizing, the data involves transforming the expression values so that each gene has a mean of zero and a standard deviation of one. This is particularly important because gene expression levels can vary widely. Without scaling, genes with higher expression levels might disproportionately influence the network construction, potentially overshadowing the contribution of genes with lower expression levels. By Z-scaling, we ensure that each gene's expression pattern is considered equally, allowing for a more balanced and accurate network analysis.
@@ -276,7 +277,7 @@ _minModuleSize:_ This parameter sets the minimum number of genes allowed in each
    
 _deepSplit:_ This parameter controls the sensitivity of module detection to smaller substructures within larger modules. Increasing `deepSplit` allows for finer partitioning of large modules, potentially revealing more detailed sub-modules. However, it may also lead to smaller modules that could be less robust.
    
-_cutHeight_: In hierarchical clustering, this parameter defines the height at which to cut the dendrogram to form distinct modules. It determines the granularity of module detection: lower values result in fewer, larger modules, while higher values yield more, smaller modules. Choosing an optimal `cutHeight` involves balancing between capturing distinct gene groups and avoiding excessive fragmentation of modules.
+_cutHeight_: In hierarchical clustering, this parameter defines 1 - the correlation for merging similar modules. It determines the granularity of module detection: higher values result in fewer, larger modules, while lower values yield more, smaller modules. Choosing an optimal `cutHeight` involves balancing between capturing distinct gene groups and avoiding excessive fragmentation of modules.
 
 These settings are crucial for effective module identification in WGCNA, helping to tailor the analysis to specific biological questions and dataset characteristics.
  
@@ -500,6 +501,7 @@ eigengene_scores %>%
     by = "module"
   ) -> top5_egs_enrichment
 
+eigengene_scores
 
 ```
 
@@ -549,6 +551,8 @@ ggplot(eigengene_scores_long %>% filter(module == "PHHnitro_3"), aes(x=dose, y=e
   theme_bw() +
   theme(legend.position = "none") +
   facet_wrap(~timepoint)
+
+ggsave(file.path(plotDir, "doseresponse_PHHnitro_3.pdf"), width=8, height=5)
 
 
 ```
